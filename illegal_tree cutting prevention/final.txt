@@ -1,0 +1,225 @@
+#include <ESP8266WiFi.h>
+#include<FirebaseArduino.h>
+#include <TinyGPS++.h>
+#include <SoftwareSerial.h>
+#include <ESP8266WiFi.h>
+#include <Wire.h>
+#include "dht.h"
+#define dht_apin D0                     
+#define FIREBASE_HOST "hamtest-1870f.firebaseio.com"
+#define FIREBASE_AUTH "isVMkWJ4sf5q6bibFFpON02N11PqHNFyWzxq5OvD"
+#define WIFI_SSID "hamsa"
+#define WIFI_PASSWORD "12345678"
+dht DHT;
+TinyGPSPlus gps;  // The TinyGPS++ object
+bool NOISE = true;
+float TEMP = 0.00;
+bool TILT = true;
+int tilt = D3;
+SoftwareSerial ss(4, 5); // Th
+const uint8_t scl = D6;// Select SDA and SCL pins for I2C communication 
+const uint8_t sda = D7;
+int Sound = A0;
+int ANGLE = 0;
+String DATE = "0000000";
+String LOCATION = "0.0000,0.0000";
+float latitude , longitude;
+// MPU6050 Slave Device Address
+const uint8_t MPU6050SlaveAddress = 0x68;
+double x,y,z;
+// sensitivity scale factor respective to full scale setting provided in datasheet 
+const uint16_t AccelScaleFactor = 16384;
+// MPU6050 few configuration register addresses
+const uint8_t MPU6050_REGISTER_SMPLRT_DIV   =  0x19;
+const uint8_t MPU6050_REGISTER_USER_CTRL    =  0x6A;
+const uint8_t MPU6050_REGISTER_PWR_MGMT_1   =  0x6B;
+const uint8_t MPU6050_REGISTER_PWR_MGMT_2   =  0x6C;
+const uint8_t MPU6050_REGISTER_CONFIG       =  0x1A;
+const uint8_t MPU6050_REGISTER_GYRO_CONFIG  =  0x1B;
+const uint8_t MPU6050_REGISTER_ACCEL_CONFIG =  0x1C;
+const uint8_t MPU6050_REGISTER_FIFO_EN      =  0x23;
+const uint8_t MPU6050_REGISTER_INT_ENABLE   =  0x38;
+const uint8_t MPU6050_REGISTER_ACCEL_XOUT_H =  0x3B;
+const uint8_t MPU6050_REGISTER_SIGNAL_PATH_RESET  = 0x68;
+int16_t AccelX, AccelY, AccelZ, Temperature;
+
+void setup() {
+
+  Serial.begin(9600);
+  Serial.println("Serial communication started\n\n");  
+  pinMode (Sound, INPUT) ;    
+  pinMode (tilt, INPUT);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);               
+  Serial.print("Connecting to ");
+  Serial.print(WIFI_SSID);
+  Wire.begin(sda, scl);
+  MPU6050_Init();
+  while (WiFi.status() != WL_CONNECTED) {
+    Serial.print(".");
+    delay(500);
+  } 
+  Serial.println();
+  Serial.print("Connected to ");
+  Serial.println(WIFI_SSID);
+  Serial.print("IP Address is : ");
+  Serial.println(WiFi.localIP());                 //print local IP address
+  Firebase.begin(FIREBASE_HOST, FIREBASE_AUTH);   // connect to firebase
+  delay(1000);
+   if (!Firebase.failed())
+  { delay(500);
+    Firebase.setBool("devices/0/online",true);
+    
+  }
+  
+}
+
+void loop() { 
+// Firebase Error Handling ************************************************
+  if (Firebase.failed())
+  { delay(500);
+    Firebase.begin(FIREBASE_HOST, FIREBASE_AUTH);
+    Serial.println(Firebase.error());
+  Serial.println("Connection to firebase failed. Reconnecting...");
+  delay(500);
+  }
+  
+  else 
+  { 
+    Serial.println("Everything is ready!");
+    delay(300); 
+    Serial.println("Uploading Data to FireBase !!!");
+    checkTemp();
+    checkForNoise();
+    checkTilt();
+    readLocation();
+    readAngle();
+    sendJSON();
+    delay(5000);
+ }
+}
+
+void checkTilt() {
+  int val=digitalRead(tilt);
+   if(val==LOW){
+    TILT = false;
+   }
+  else{
+    TILT = true;
+  }
+}
+
+void checkTemp () {
+  DHT.read11(dht_apin);
+    int temperature = DHT.temperature;
+//    TEMP = DHT.temperature;
+    if(temperature>40)
+      TEMP = true;
+    else
+      TEMP = false;
+}
+
+void checkForNoise () {
+   int val = analogRead(Sound);
+   //dB = 20 × log (V2 / V1).
+    if(val>1000)
+      NOISE = true;
+    else
+      NOISE = false;
+}
+
+void readLocation() {
+  String lat_str , lng_str;
+  if(ss.available() > 0)
+    if (gps.encode(ss.read()))
+    {
+      if (gps.location.isValid())
+      {
+        latitude = gps.location.lat();
+        lat_str = String(latitude , 6);
+        longitude = gps.location.lng();
+        lng_str = String(longitude , 6);
+        Serial.println("LAT");
+        Serial.println(lat_str);
+        Serial.println("Lon");
+        Serial.println(lng_str);
+        LOCATION=lat_str+","+lng_str;
+      }
+    }
+}
+
+void Read_RawValue(uint8_t deviceAddress, uint8_t regAddress){
+  Wire.beginTransmission(deviceAddress);
+  Wire.write(regAddress);
+  Wire.endTransmission();
+  Wire.requestFrom(deviceAddress, (uint8_t)14);
+  AccelX = (((int16_t)Wire.read()<<8) | Wire.read());
+  AccelY = (((int16_t)Wire.read()<<8) | Wire.read());
+  AccelZ = (((int16_t)Wire.read()<<8) | Wire.read());
+  Temperature = (((int16_t)Wire.read()<<8) | Wire.read());
+}
+
+void I2C_Write(uint8_t deviceAddress, uint8_t regAddress, uint8_t data){
+  Wire.beginTransmission(deviceAddress);
+  Wire.write(regAddress);
+  Wire.write(data);
+  Wire.endTransmission();
+}
+
+//configure MPU6050
+void MPU6050_Init(){
+  delay(150);
+  I2C_Write(MPU6050SlaveAddress, MPU6050_REGISTER_SMPLRT_DIV, 0x07);
+  I2C_Write(MPU6050SlaveAddress, MPU6050_REGISTER_PWR_MGMT_1, 0x01);
+  I2C_Write(MPU6050SlaveAddress, MPU6050_REGISTER_PWR_MGMT_2, 0x00);
+  I2C_Write(MPU6050SlaveAddress, MPU6050_REGISTER_CONFIG, 0x00);
+  I2C_Write(MPU6050SlaveAddress, MPU6050_REGISTER_GYRO_CONFIG, 0x00);//set +/-250 degree/second full scale
+  I2C_Write(MPU6050SlaveAddress, MPU6050_REGISTER_ACCEL_CONFIG, 0x00);// set +/- 2g full scale
+  I2C_Write(MPU6050SlaveAddress, MPU6050_REGISTER_FIFO_EN, 0x00);
+  I2C_Write(MPU6050SlaveAddress, MPU6050_REGISTER_INT_ENABLE, 0x01);
+  I2C_Write(MPU6050SlaveAddress, MPU6050_REGISTER_SIGNAL_PATH_RESET, 0x00);
+  I2C_Write(MPU6050SlaveAddress, MPU6050_REGISTER_USER_CTRL, 0x00);
+}
+
+void readAngle() {
+  double Ax, Ay, Az, T;
+  
+  Read_RawValue(MPU6050SlaveAddress, MPU6050_REGISTER_ACCEL_XOUT_H);
+  //divide each with their sensitivity scale factor
+  Ax = (double)AccelX/AccelScaleFactor;
+  Ay = (double)AccelY/AccelScaleFactor;
+  Az = (double)AccelZ/AccelScaleFactor;
+  T = (double)Temperature/340+36.53; //temperature formula
+ 
+  x= RAD_TO_DEG * (atan2(-Ax, -Az)+PI);
+  y= RAD_TO_DEG * (atan2(-Ay,-Az)+PI);
+  z= RAD_TO_DEG * (atan2(-Ay, -Ax)+PI);
+
+  Serial.print(" x: ");Serial.print(x);
+  
+}
+
+void sendJSON () {
+  StaticJsonBuffer<200> jsonBuffer;
+  // create an object
+  JsonObject& object1 = jsonBuffer.createObject();
+  String strdate = String(__DATE__);
+  String strtime = String(__TIME__);
+  DATE = strdate+strtime;
+  object1["date"] = DATE; //unix timestamp
+  object1["location"] = LOCATION;//comma separated lat , long
+  object1["noise"]  = NOISE; //true if detected
+  object1["angle"] = x;//in deg
+  object1["temp"] = TEMP; //true if it surpasses threshold temp.
+  object1["tilt"] = TILT; //true if detected.
+  Firebase.push("devices/0/values",object1); // 0 is the device number.
+  Serial.print(" angle: ");Serial.println(x);
+  Serial.print(" date: ");Serial.println(DATE);
+  Serial.print(" location: ");Serial.println(LOCATION);
+  Serial.print(" noise: ");Serial.println(NOISE);
+  Serial.print(" temp: ");Serial.println(TEMP);
+  Serial.print(" tilt: ");Serial.println(TILT
+  );
+  
+  
+  Serial.println("uploaded"); 
+}
